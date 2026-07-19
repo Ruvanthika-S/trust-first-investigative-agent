@@ -1,6 +1,9 @@
+import os
+
 import streamlit as st
 
 from agent import follow_up
+from auth import load_user_store, save_user_store
 
 st.set_page_config(page_title="Follow-up chat", layout="centered")
 
@@ -12,6 +15,16 @@ if "active_chat_key" not in st.session_state:
     st.session_state.active_chat_key = None
 if "history" not in st.session_state:
     st.session_state.history = []
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "auth_email" not in st.session_state:
+    st.session_state.auth_email = ""
+if "user_store_path" not in st.session_state:
+    st.session_state.user_store_path = os.path.join(os.path.dirname(__file__), "..", "users.json")
+
+if not st.session_state.authenticated:
+    st.warning("Please sign in from the main page first.")
+    st.stop()
 
 if st.session_state.last_result is None:
     st.info("Open an investigation first from the main page to start a follow-up thread.")
@@ -52,4 +65,14 @@ if follow_up_msg:
     st.session_state.follow_up_chats[chat_key] = chat_history
     if match is not None:
         match["follow_up_chat"] = chat_history
+
+    store = load_user_store(st.session_state.user_store_path)
+    user_entry = store.get(st.session_state.auth_email, {})
+    store[st.session_state.auth_email] = {
+        **user_entry,
+        "email": st.session_state.auth_email,
+        "history": st.session_state.history,
+        "follow_up_chats": st.session_state.follow_up_chats,
+    }
+    save_user_store(store, st.session_state.user_store_path)
     st.rerun()

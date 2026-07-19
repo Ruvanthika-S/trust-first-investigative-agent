@@ -1,6 +1,18 @@
+import os
+
 import streamlit as st
 
 from agent import follow_up, run_agent
+from auth import (
+    authenticate_user,
+    delete_account,
+    load_user_store,
+    register_user,
+    reset_password,
+    save_user_store,
+    use_cloud_backend,
+    validate_password_strength,
+)
 
 st.set_page_config(page_title="Trust-first investigative agent", layout="wide")
 
@@ -80,10 +92,114 @@ st.markdown(
     .stAlert, .stSuccess, .stError, .stInfo {
         border-radius: 12px;
     }
+    .auth-shell {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 1.2rem 0 2rem;
+    }
+    .auth-card {
+        padding: 1.4rem;
+        border-radius: 22px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(15, 23, 42, 0.8);
+        box-shadow: 0 14px 40px rgba(0,0,0,0.28);
+    }
+    .auth-title {
+        font-size: 1.4rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 0.3rem;
+    }
+    .auth-subtitle {
+        color: #cbd5e1;
+        margin-bottom: 1rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+st.session_state.setdefault("last_result", None)
+st.session_state.setdefault("history", [])
+st.session_state.setdefault("question_input", "")
+st.session_state.setdefault("follow_up_chats", {})
+st.session_state.setdefault("active_chat_key", None)
+st.session_state.setdefault("clear_input", False)
+st.session_state.setdefault("authenticated", False)
+st.session_state.setdefault("auth_email", "")
+st.session_state.setdefault("auth_mode", "sign_in")
+st.session_state.setdefault("auth_error", "")
+st.session_state.setdefault("show_delete_confirm", False)
+st.session_state.setdefault("show_password", False)
+st.session_state.setdefault("show_reset_form", False)
+st.session_state.setdefault("user_store_path", os.path.join(os.path.dirname(__file__), "users.json"))
+
+if st.session_state.get("clear_input"):
+    st.session_state.clear_input = False
+    st.session_state.question_input = ""
+
+if not st.session_state.authenticated:
+    st.markdown('<div class="auth-shell">', unsafe_allow_html=True)
+    st.markdown('<div class="auth-card">', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="hero-card">
+            <div class="hero-title">Secure access</div>
+            <div class="hero-subtitle">Sign in or create an account to access your investigative workspace.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="auth-title">Welcome</div>', unsafe_allow_html=True)
+    st.markdown('<div class="auth-subtitle">Create an account or sign in to continue.</div>', unsafe_allow_html=True)
+    if use_cloud_backend():
+        st.success("Supabase Auth is configured. Sign-up and sign-in use the real Supabase authentication service.")
+    else:
+        st.caption("Supabase credentials are not configured yet, so the app is using the local fallback auth flow for now.")
+    tab_sign_in, tab_sign_up = st.tabs(["Sign in", "Sign up"])
+    with tab_sign_in:
+        email = st.text_input("Email", key="auth_sign_in_email", placeholder="you@example.com")
+        password = st.text_input("Password", type="password", key="auth_sign_in_password")
+        if st.button("Sign in", use_container_width=True):
+            if authenticate_user(email, password, store_path=st.session_state.user_store_path):
+                st.session_state.authenticated = True
+                st.session_state.auth_email = email.strip().lower()
+                st.session_state.auth_error = ""
+                store = load_user_store(st.session_state.user_store_path)
+                user_entry = store.get(st.session_state.auth_email, {})
+                st.session_state.history = user_entry.get("history", [])
+                st.session_state.follow_up_chats = user_entry.get("follow_up_chats", {})
+                st.rerun()
+            else:
+                st.session_state.auth_error = "Invalid email or password"
+        if st.button("Forgot password?", use_container_width=True):
+            st.session_state.show_reset_form = True
+        if st.session_state.show_reset_form:
+            reset_email = st.text_input("Email for reset", key="auth_reset_email", placeholder="you@example.com")
+            reset_password_value = st.text_input("New password", type="password", key="auth_reset_password")
+            if st.button("Reset password", use_container_width=True):
+                if reset_password(reset_email, reset_password_value, store_path=st.session_state.user_store_path):
+                    st.session_state.auth_error = "Password updated. Please sign in."
+                    st.session_state.show_reset_form = False
+                else:
+                    st.session_state.auth_error = "Could not reset password. Check the email and password strength."
+    with tab_sign_up:
+        new_email = st.text_input("Email", key="auth_sign_up_email", placeholder="you@example.com")
+        new_password = st.text_input("Password", type="password", key="auth_sign_up_password")
+        if validate_password_strength(new_password):
+            st.caption("Password strength: strong")
+        else:
+            st.caption("Password must be 8+ chars, include uppercase, lowercase, number, and symbol")
+        if st.button("Create account", use_container_width=True):
+            if register_user(new_email, new_password, store_path=st.session_state.user_store_path):
+                st.session_state.auth_error = "Account created. Please sign in."
+            else:
+                st.session_state.auth_error = "Account already exists or password is too weak"
+    if st.session_state.auth_error:
+        st.warning(st.session_state.auth_error)
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.stop()
 
 st.markdown(
     """
@@ -95,44 +211,61 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.session_state.setdefault("last_result", None)
-st.session_state.setdefault("history", [])
-st.session_state.setdefault("question_input", "")
-st.session_state.setdefault("follow_up_chats", {})
-st.session_state.setdefault("active_chat_key", None)
-st.session_state.setdefault("clear_input", False)
+if st.session_state.authenticated:
+    with st.sidebar:
+        st.header("Account")
+        st.success(f"Signed in as {st.session_state.auth_email}")
+        if st.button("Sign out", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.auth_email = ""
+            st.session_state.auth_error = ""
+            st.rerun()
 
-if st.session_state.get("clear_input"):
-    st.session_state.clear_input = False
-    st.session_state.question_input = ""
-
-with st.sidebar:
-    st.header("How it works?")
-    st.write("The assistant will:")
-    st.markdown("- break your question into smaller checkable claims")
-    st.markdown("- search for likely sources")
-    st.markdown("- summarize the evidence and rank the sources")
-    st.divider()
-    st.subheader("Try one!!")
-    example_prompts = [
-        "Is it true that coffee stunts your growth?",
-        "Does drinking water every 20 minutes help your metabolism?",
-        "Is the moon landing fake?",
-    ]
-    for example in example_prompts:
-        if st.button(example, key=f"example_{example}"):
-            st.session_state.question_input = example
-    st.divider()
-    st.subheader("History")
-    if st.session_state.history:
-        for i, item in enumerate(reversed(st.session_state.history[-8:])):
-            if st.button(item["question"], key=f"history_{i}_{item['question']}"):
-                st.session_state.last_result = item["result"]
-                st.session_state.active_chat_key = item["question"]
-                st.session_state.question_input = item["question"]
+        if not st.session_state.show_delete_confirm:
+            if st.button("Delete account", use_container_width=True):
+                st.session_state.show_delete_confirm = True
+        else:
+            st.warning("This will permanently remove your account and history.")
+            if st.button("Confirm delete", use_container_width=True):
+                if delete_account(st.session_state.auth_email, "", store_path=st.session_state.user_store_path):
+                    st.session_state.authenticated = False
+                    st.session_state.auth_email = ""
+                    st.session_state.auth_error = "Account deleted."
+                    st.session_state.show_delete_confirm = False
+                    st.rerun()
+                else:
+                    st.session_state.auth_error = "Delete failed. Please sign out and retry."
+            if st.button("Cancel", use_container_width=True):
+                st.session_state.show_delete_confirm = False
                 st.rerun()
-    else:
-        st.caption("No investigations yet")
+
+        st.divider()
+        st.header("How it works?")
+        st.write("The assistant will:")
+        st.markdown("- break your question into smaller checkable claims")
+        st.markdown("- search for likely sources")
+        st.markdown("- summarize the evidence and rank the sources")
+        st.divider()
+        st.subheader("Try one!!")
+        example_prompts = [
+            "Is it true that coffee stunts your growth?",
+            "Does drinking water every 20 minutes help your metabolism?",
+            "Is the moon landing fake?",
+        ]
+        for example in example_prompts:
+            if st.button(example, key=f"example_{example}"):
+                st.session_state.question_input = example
+        st.divider()
+        st.subheader("History")
+        if st.session_state.history:
+            for i, item in enumerate(reversed(st.session_state.history[-8:])):
+                if st.button(item["question"], key=f"history_{i}_{item['question']}"):
+                    st.session_state.last_result = item["result"]
+                    st.session_state.active_chat_key = item["question"]
+                    st.session_state.question_input = item["question"]
+                    st.rerun()
+        else:
+            st.caption("No investigations yet")
 
 st.markdown('<div class="panel">', unsafe_allow_html=True)
 col1, col2 = st.columns([3.6, 1.2])
@@ -150,13 +283,24 @@ if clear_clicked:
     st.rerun()
 
 if investigate_clicked and question:
-    with st.spinner("Investigating..."):
-        result = run_agent(question)
-        st.session_state.last_result = result
-        st.session_state.active_chat_key = question
-        st.session_state.follow_up_chats.setdefault(question, [])
-        st.session_state.history.append({"question": question, "result": result, "follow_up_chat": []})
-st.markdown('</div>', unsafe_allow_html=True)
+    if not st.session_state.authenticated:
+        st.warning("Please sign in before investigating.")
+    else:
+        with st.spinner("Investigating..."):
+            result = run_agent(question)
+            st.session_state.last_result = result
+            st.session_state.active_chat_key = question
+            st.session_state.follow_up_chats.setdefault(question, [])
+            st.session_state.history.append({"question": question, "result": result, "follow_up_chat": []})
+            store = load_user_store(st.session_state.user_store_path)
+            store[st.session_state.auth_email] = {
+                "email": st.session_state.auth_email,
+                "salt": store.get(st.session_state.auth_email, {}).get("salt", ""),
+                "password_hash": store.get(st.session_state.auth_email, {}).get("password_hash", ""),
+                "history": st.session_state.history,
+                "follow_up_chats": st.session_state.follow_up_chats,
+            }
+            save_user_store(store, st.session_state.user_store_path)
 
 if not question:
     st.markdown('<div class="panel"><span class="pill">Ready to investigate</span><br>Enter a claim or select one of the examples to start a fact-check.</div>', unsafe_allow_html=True)

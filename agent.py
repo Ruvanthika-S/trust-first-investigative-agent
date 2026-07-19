@@ -12,6 +12,59 @@ api_key = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=api_key) if api_key else None
 
 
+def score_source_credibility(source):
+    url = (source.get("url") or "").lower()
+    domain = url.split("//")[-1].split("/")[0] if url else ""
+    if domain.endswith(".gov") or domain.endswith(".org"):
+        return {"label": "high", "score": 4}
+    if domain.endswith(".com"):
+        return {"label": "medium", "score": 3}
+    return {"label": "low", "score": 1}
+
+
+def build_evidence_summary(trace):
+    claim_count = sum(1 for item in trace if item.get("step") == "decompose")
+    evidence_by_claim = []
+    current_claim = None
+    support = 0
+    contradict = 0
+    irrelevant = 0
+
+    for step in trace:
+        if step.get("step") == "search":
+            detail = step.get("detail", "")
+            current_claim = detail.replace("Searched: '", "").replace("'", "") if "Searched:" in detail else current_claim
+            continue
+        if step.get("step") == "evaluate" and current_claim:
+            detail = step.get("detail", "")
+            if detail.upper().startswith("SUPPORT"):
+                support += 1
+            elif detail.upper().startswith("CONTRADICT"):
+                contradict += 1
+            else:
+                irrelevant += 1
+            evidence_by_claim.append({
+                "claim": current_claim,
+                "support": support,
+                "contradict": contradict,
+                "irrelevant": irrelevant,
+            })
+            support = 0
+            contradict = 0
+            irrelevant = 0
+
+    if not evidence_by_claim:
+        evidence_by_claim = [{"claim": "Overall", "support": 0, "contradict": 0, "irrelevant": 0}]
+
+    return {
+        "claim_count": max(claim_count, len(evidence_by_claim)),
+        "overall_support": sum(item["support"] for item in evidence_by_claim),
+        "overall_contradict": sum(item["contradict"] for item in evidence_by_claim),
+        "overall_irrelevant": sum(item["irrelevant"] for item in evidence_by_claim),
+        "evidence_by_claim": evidence_by_claim,
+    }
+
+
 def call_llm(prompt):
     if client is None:
         raise RuntimeError("GROQ_API_KEY is missing. Add it to the .env file before running the app.")
@@ -99,14 +152,28 @@ def run_agent(question):
 
             for source in results:
                 verdict = evaluate_source(claim, source)
-                trace.append({"step": "evaluate", "detail": verdict, "source_url": source.get("url")})
+                credibility = score_source_credibility(source)
+                trace.append({
+                    "step": "evaluate",
+                    "detail": verdict,
+                    "source_url": source.get("url"),
+                    "credibility": credibility,
+                })
 
         final_answer = synthesize(cleaned_question, trace)
         trace.append({"step": "synthesize", "detail": final_answer})
-        return {"answer": final_answer, "trace": trace, "confidence": extract_confidence(final_answer)}
+        evidence_summary = build_evidence_summary(trace)
+        return {
+            "answer": final_answer,
+            "trace": trace,
+            "confidence": extract_confidence(final_answer),
+            "evidence_summary": evidence_summary,
+        }
     except Exception as exc:
         trace.append({"step": "error", "detail": str(exc)})
         return {"answer": f"I hit an issue while investigating: {exc}", "trace": trace, "confidence": "low"}
+
+
 def follow_up(original_question, original_answer, trace, user_message, chat_history):
     trace_summary = "\n".join(
         f"- {step.get('detail', '')}" for step in trace if step.get("step") in ("search", "evaluate", "synthesize")
